@@ -1,266 +1,404 @@
 /**
- * Sample React Native App
- * https://github.com/facebook/react-native
- *
+ * CarelyApp - Daily Safety Check-In
+ * Peace of mind for people living alone. One simple tap each day keeps your loved ones informed.
  * @format
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
   StatusBar,
   StyleSheet,
   Text,
   View,
-  Alert,
   ScrollView,
-  TextInput,
   TouchableOpacity,
   Platform,
+  ActivityIndicator,
 } from 'react-native';
 import {
   SafeAreaProvider,
   SafeAreaView,
 } from 'react-native-safe-area-context';
 import messaging from '@react-native-firebase/messaging';
-import notifee, { EventType } from '@notifee/react-native';
+import notifee, { EventType, AndroidVisibility } from '@notifee/react-native';
+
+type Screen = 'home' | 'checkin' | 'settings';
+
+interface CheckInParams {
+  messageId: string;
+  title?: string;
+  body?: string;
+}
+
+interface EmergencyContact {
+  name: string;
+  email: string;
+}
+
+const formatLastCheckIn = (date: Date | null): string => {
+  if (!date) return 'Not yet today';
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
+
+  if (diffHours < 24 && date.getDate() === now.getDate()) {
+    return `Today at ${date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+  }
+  if (diffDays === 1) {
+    return `Yesterday at ${date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+  }
+  return date.toLocaleDateString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+};
+
+const getCountdown = (lastCheckIn: Date | null): string => {
+  const now = new Date();
+  if (!lastCheckIn) {
+    const h = now.getHours().toString().padStart(2, '0');
+    const m = now.getMinutes().toString().padStart(2, '0');
+    const s = now.getSeconds().toString().padStart(2, '0');
+    return `${h}:${m}:${s}`;
+  }
+  const nextWindow = new Date(lastCheckIn);
+  nextWindow.setDate(nextWindow.getDate() + 1);
+  const diffMs = nextWindow.getTime() - now.getTime();
+  if (diffMs <= 0) return '00:00:00';
+  const hours = Math.floor(diffMs / 3600000);
+  const mins = Math.floor((diffMs % 3600000) / 60000);
+  const secs = Math.floor((diffMs % 60000) / 1000);
+  return `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+};
 
 function App() {
   const [fcmToken, setFcmToken] = useState<string>('');
-  const [messages, setMessages] = useState<string[]>([]);
-  const [inputText, setInputText] = useState<string>('');
-  const [backendUrl, setBackendUrl] = useState<string>('https://your-backend-api.com/register-token');
-  const [isTokenSent, setIsTokenSent] = useState<boolean>(false);
+  const [currentScreen, setCurrentScreen] = useState<Screen>('home');
+  const [checkInParams, setCheckInParams] = useState<CheckInParams | null>(null);
+  const [lastCheckIn, setLastCheckIn] = useState<Date | null>(null);
+  const [countdown, setCountdown] = useState(() => {
+  const now = new Date();
+  const h = now.getHours().toString().padStart(2, '0');
+  const m = now.getMinutes().toString().padStart(2, '0');
+  const s = now.getSeconds().toString().padStart(2, '0');
+  return `${h}:${m}:${s}`;
+});
+  const [emergencyContact, setEmergencyContact] = useState<EmergencyContact | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [checkInSuccess, setCheckInSuccess] = useState(false);
+  const [backendUrl] = useState<string>('https://your-backend-api.com/register-token');
 
-  // Function to send FCM token to backend
-  // const sendTokenToBackend = async (token: string) => {
-  //   try {
-  //     const response = await fetch(backendUrl, {
-  //       method: 'POST',
-  //       headers: {
-  //         'Content-Type': 'application/json',
-  //       },
-  //       body: JSON.stringify({
-  //         fcmToken: token,
-  //         deviceType: Platform.OS,
-  //         timestamp: new Date().toISOString(),
-  //       }),
-  //     });
+  const navigateToCheckIn = useCallback((params: CheckInParams) => {
+    setCheckInParams(params);
+    setCurrentScreen('checkin');
+  }, []);
 
-  //     if (response.ok) {
-  //       console.log('Token sent to backend successfully');
-  //       setIsTokenSent(true);
-  //     } else {
-  //       console.error('Failed to send token to backend, status:', response.status);
-  //     }
-  //   } catch (error) {
-  //     console.error('Error sending token to backend:', error);
-  //   }
-  // };
+  const navigateToHome = useCallback(() => {
+    setCurrentScreen('home');
+    setCheckInParams(null);
+  }, []);
 
-  //Function to send acknowledgment to backend
+  const performCheckIn = useCallback(async (messageId?: string) => {
+    setLastCheckIn(new Date());
+    setCheckInSuccess(true);
+    if (messageId) {
+      try {
+        await fetch(`${backendUrl}/acknowledge`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            messageId,
+            fcmToken,
+            acknowledgedAt: new Date().toISOString(),
+          }),
+        });
+      } catch (error) {
+        console.error('Error sending acknowledgment:', error);
+      }
+    }
+    setTimeout(() => {
+      setCheckInSuccess(false);
+      navigateToHome();
+    }, 1200);
+  }, [fcmToken, backendUrl, navigateToHome]);
+
   const sendAcknowledgment = async (messageId: string) => {
     try {
       const response = await fetch(`${backendUrl}/acknowledge`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          messageId: messageId,
-          fcmToken: fcmToken,
+          messageId,
+          fcmToken,
           acknowledgedAt: new Date().toISOString(),
         }),
       });
-
-      if (response.ok) {
-        console.log('Acknowledgment sent successfully');
-      } else {
-        console.error('Failed to send acknowledgment, status:', response.status);
-      }
+      if (response.ok) console.log('Acknowledgment sent successfully');
     } catch (error) {
       console.error('Error sending acknowledgment:', error);
     }
   };
 
   useEffect(() => {
-    console.log('Setting up notifications...');
     const setup = async () => {
       try {
-        // Request permission
         const authStatus = await messaging().requestPermission();
         const enabled =
           authStatus === messaging.AuthorizationStatus.AUTHORIZED ||
           authStatus === messaging.AuthorizationStatus.PROVISIONAL;
+        if (!enabled) console.log('Notification permission not granted');
 
-        if (enabled) {
-          console.log('Authorization status:', authStatus);
-        } else {
-          console.log('Notification permission not granted');
-        }
-
-        // Get FCM token
         const token = await messaging().getToken();
         setFcmToken(token);
-        console.log('FCM Token:', token);
 
-        // Request notification permissions
-        const notifeePermission = await notifee.requestPermission();
-        console.log('Notifee permission:', notifeePermission);
-
-        // Create notification channel for Android
+        await notifee.requestPermission();
         if (Platform.OS === 'android') {
           await notifee.createChannel({
             id: 'default',
-            name: 'Default Channel',
+            name: 'Carely Notifications',
             importance: 4,
-            sound: 'hollow',
+            sound: 'default',
+            visibility: AndroidVisibility.PUBLIC,
           });
-          console.log('Notification channel created default');
         }
 
-        console.log('Notifee event handler set up');
+        const initialNotification = await notifee.getInitialNotification();
+        if (initialNotification?.notification?.data) {
+          const data = initialNotification.notification.data as Record<string, string>;
+          const messageId = data.messageId || data.message_id || 'unknown';
+          const screen = data.screen || 'checkin';
+          if (screen === 'checkin') {
+            navigateToCheckIn({
+              messageId,
+              title: initialNotification.notification.title,
+              body: initialNotification.notification.body,
+            });
+          }
+        }
       } catch (error) {
         console.error('Error in setup:', error);
+      } finally {
+        setIsLoading(false);
       }
     };
+    setup();
+  }, [navigateToCheckIn]);
 
-    // Set up event handler for notification actions
-    notifee.onForegroundEvent(async ({ type, detail }) => {
-      console.log('Foreground event:', type, detail);
-      if (type === EventType.ACTION_PRESS && detail?.pressAction?.id === 'checkin') {
-        console.log('Check-in action pressed');
+  useEffect(() => {
+    const unsubscribe = notifee.onForegroundEvent(async ({ type, detail }) => {
+      if (type === EventType.PRESS) {
+        const data = detail.notification?.data as Record<string, string> | undefined;
+        const messageId = data?.messageId || data?.message_id || 'unknown';
+        const screen = data?.screen || 'checkin';
+        if (screen === 'checkin') {
+          navigateToCheckIn({
+            messageId,
+            title: detail.notification?.title,
+            body: detail.notification?.body,
+          });
+        }
+      } else if (type === EventType.ACTION_PRESS && detail?.pressAction?.id === 'checkin') {
+        const data = detail.notification?.data as Record<string, string> | undefined;
+        const messageId = data?.messageId || data?.message_id || 'unknown';
+        navigateToCheckIn({ messageId });
         try {
-          if (detail.notification?.id) {
-            await notifee.cancelNotification(detail.notification.id);
-            console.log('Notification canceled');
-          }
-          if (detail.notification?.data?.messageId) {
-            await sendAcknowledgment(String(detail.notification.data.messageId));
-            console.log('Acknowledgment sent');
-          }
+          if (detail.notification?.id) await notifee.cancelNotification(detail.notification.id);
+          await sendAcknowledgment(messageId);
         } catch (error) {
           console.error('Error handling action:', error);
         }
       }
     });
+    return unsubscribe;
+  }, [navigateToCheckIn, fcmToken]);
 
-    // Set up background event handler
-    notifee.onBackgroundEvent(async ({ type, detail }) => {
-      console.log('Background event:', type, detail);
-      if (type === EventType.ACTION_PRESS && detail?.pressAction?.id === 'checkin') {
-        console.log('Check-in action pressed in background');
-        try {
-          if (detail.notification?.id) {
-            await notifee.cancelNotification(detail.notification.id);
-            console.log('Notification canceled from background');
-          }
-          // Note: Acknowledgment sending may not work in background
-        } catch (error) {
-          console.error('Error handling background action:', error);
-        }
-      }
-    });
-
-    // Foreground message handler
+  useEffect(() => {
     const unsubscribe = messaging().onMessage(async remoteMessage => {
-      // Process the message here
-      console.log('A new FCM message arrived in the foreground!', remoteMessage);
-      //Alert.alert( remoteMessage.notification?.title || 'Carely Notification', remoteMessage.notification?.body || 'Check-in required');
-      try{
+      try {
+        const messageId = remoteMessage.messageId || remoteMessage.data?.messageId || 'unknown';
         await notifee.displayNotification({
-          title: remoteMessage.notification?.title || 'Carely Notification',
-          body: remoteMessage.notification?.body || 'Check-in required',
-          data: { messageId: remoteMessage.messageId || remoteMessage.data?.messageId || 'unknown' },
+          title: remoteMessage.notification?.title || 'Carely - Check-in Reminder',
+          body: remoteMessage.notification?.body || 'Tap to confirm you\'re OK',
+          data: { messageId, screen: 'checkin' },
           android: {
             channelId: 'default',
             importance: 4,
-            sound: 'hollow',
-            actions: [
-              {
-                title: 'Check-in',
-                pressAction: {
-                  id: 'checkin',
-                },
-              },
-            ],
+            visibility: AndroidVisibility.PUBLIC,
+            pressAction: { id: 'open_checkin' },
+            actions: [{ title: 'I\'m OK', pressAction: { id: 'checkin' } }],
           },
-          ios: {
-            categoryId: 'checkin',
-          },
+          ios: { categoryId: 'checkin' },
         });
       } catch (error) {
         console.error('Error displaying notification:', error);
       }
-     
-      //console.log('3')
-      
-      // You can use the message data to update UI or show a local notification
-      //Alert.alert( remoteMessage.notification?.title || 'Carely Notification', remoteMessage.notification?.body || 'Check-in required');
     });
-
-    setup();
-
     return unsubscribe;
   }, []);
 
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setCountdown(getCountdown(lastCheckIn));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [lastCheckIn]);
 
-  const handleClearMessages = () => {
-    setMessages([]);
+  const handleCheckInFromNotification = async () => {
+    if (checkInParams?.messageId) {
+      await sendAcknowledgment(checkInParams.messageId);
+      performCheckIn(checkInParams.messageId);
+    }
   };
+
+  const handleManualCheckIn = () => {
+    performCheckIn();
+  };
+
+  if (isLoading) {
+    return (
+      <SafeAreaProvider>
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#0D9488" />
+          <Text style={styles.loadingText}>Loading Carely...</Text>
+        </View>
+      </SafeAreaProvider>
+    );
+  }
+
+  if (currentScreen === 'settings') {
+    return (
+      <SafeAreaProvider>
+        <StatusBar barStyle="dark-content" backgroundColor="#fafafa" />
+        <SafeAreaView style={styles.container} edges={['top']}>
+          <View style={styles.settingsScreen}>
+            <TouchableOpacity onPress={() => setCurrentScreen('home')} style={styles.backButton}>
+              <Text style={styles.backButtonText}>← Back</Text>
+            </TouchableOpacity>
+            <Text style={styles.settingsTitle}>Emergency Contact</Text>
+            <Text style={styles.settingsSubtitle}>
+              If you miss check-ins, we'll alert this contact. No account needed.
+            </Text>
+            <View style={styles.settingsCard}>
+              <Text style={styles.settingsLabel}>Contact Name</Text>
+              <Text style={styles.settingsValue}>
+                {emergencyContact?.name || 'Not set'}
+              </Text>
+              <Text style={styles.settingsLabel}>Email</Text>
+              <Text style={styles.settingsValue}>
+                {emergencyContact?.email || 'Not set'}
+              </Text>
+              <Text style={styles.settingsHint}>
+                Configure your backend to send alerts to this contact when check-ins are missed.
+              </Text>
+            </View>
+            <View style={styles.footer}>
+              <Text style={styles.footerText}>Carely • Daily Safety Check-In</Text>
+            </View>
+          </View>
+        </SafeAreaView>
+      </SafeAreaProvider>
+    );
+  }
+
+  if (currentScreen === 'checkin') {
+    return (
+      <SafeAreaProvider>
+        <StatusBar barStyle="dark-content" backgroundColor="#fafafa" />
+        <SafeAreaView style={styles.container} edges={['top']}>
+          <View style={styles.checkInScreen}>
+            <TouchableOpacity onPress={navigateToHome} style={styles.backButton}>
+              <Text style={styles.backButtonText}>← Back</Text>
+            </TouchableOpacity>
+            <View style={styles.checkInContent}>
+              <View style={styles.checkInIcon}>
+                <Text style={styles.checkInIconText}>✓</Text>
+              </View>
+              <Text style={styles.checkInTitle}>Check-in Required</Text>
+              <Text style={styles.checkInSubtitle}>
+                {checkInParams?.title || 'Time to check in'}
+              </Text>
+              {checkInParams?.body && (
+                <Text style={styles.checkInBody}>{checkInParams.body}</Text>
+              )}
+            </View>
+            <View style={styles.checkInActions}>
+              <TouchableOpacity
+                style={styles.primaryButton}
+                onPress={handleCheckInFromNotification}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.primaryButtonText}>I'm OK - Check in now</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.secondaryButton}
+                onPress={navigateToHome}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.secondaryButtonText}>Dismiss</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </SafeAreaView>
+      </SafeAreaProvider>
+    );
+  }
 
   return (
     <SafeAreaProvider>
-      <StatusBar barStyle="dark-content" />
-      <SafeAreaView style={styles.container}>
-        <ScrollView contentContainerStyle={styles.scrollContainer}>
-          {/* Header */}
+      <StatusBar barStyle="dark-content" backgroundColor="#fafafa" />
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <ScrollView
+          style={styles.scrollView}
+          contentContainerStyle={styles.scrollContainer}
+          showsVerticalScrollIndicator={false}
+        >
           <View style={styles.header}>
-            <Text style={styles.title}>Carely App</Text>
-            <Text style={styles.subtitle}>
-              Firebase Push Notifications Demo
-            </Text>
-            <Text style={styles.platform}>
-              Running on {Platform.OS === 'android' ? 'Android' : 'iOS'}
-            </Text>
+            <Text style={styles.logoText}>Carely</Text>
+            <Text style={styles.tagline}>Daily Safety Check-In</Text>
           </View>
 
-
-          {/* Firebase Token Section */}
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>FCM Token</Text>
-            <Text style={styles.token} selectable>
-              {fcmToken || 'Loading token...'}
-            </Text>
-          </View>
-
-          {/* Messages Section */}
-          <View style={styles.section}>
-            <View style={styles.messagesHeader}>
-              <Text style={styles.sectionTitle}>Received Messages</Text>
-              {messages.length > 0 && (
-                <TouchableOpacity
-                  style={styles.clearButton}
-                  onPress={handleClearMessages}
-                >
-                  <Text style={styles.clearButtonText}>Clear</Text>
-                </TouchableOpacity>
-              )}
+          <View style={styles.statusCard}>
+            <View style={styles.statusHeader}>
+              <View style={[styles.statusDot, lastCheckIn && styles.statusDotActive]} />
+              <Text style={styles.statusTitle}>
+                {lastCheckIn ? "I'm OK Today" : "Your Safety Status"}
+              </Text>
             </View>
-            {messages.length === 0 ? (
-              <Text style={styles.noMessages}>No messages received yet</Text>
-            ) : (
-              messages.map((msg, index) => (
-                <View key={index} style={styles.messageContainer}>
-                  <Text style={styles.message}>{msg}</Text>
-                </View>
-              ))
-            )}
+            <Text style={styles.lastCheckIn}>
+              ● Last check-in: {formatLastCheckIn(lastCheckIn)}
+            </Text>
+            <View style={styles.timerContainer}>
+              <Text style={styles.timerLabel}>
+                {lastCheckIn ? 'Next check-in window' : 'Current time'}
+              </Text>
+              <Text style={styles.timerValue}>{countdown}</Text>
+            </View>
           </View>
 
-          {/* Footer */}
+          <TouchableOpacity
+            style={[styles.checkInButton, checkInSuccess && styles.checkInButtonSuccess]}
+            onPress={handleManualCheckIn}
+            activeOpacity={0.85}
+            disabled={checkInSuccess}
+          >
+            <Text style={styles.checkInButtonText}>
+              {checkInSuccess ? '✓ Checked in!' : "I'm OK - Check in now"}
+            </Text>
+          </TouchableOpacity>
+
+          <Text style={styles.reassurance}>
+            All good. We will only alert your emergency contacts if you miss a check-in window.
+          </Text>
+
+          <TouchableOpacity
+            style={styles.settingsLink}
+            onPress={() => setCurrentScreen('settings')}
+          >
+            <Text style={styles.settingsLinkText}>Emergency contact settings</Text>
+          </TouchableOpacity>
+
           <View style={styles.footer}>
             <Text style={styles.footerText}>
-              Send test notifications from Firebase Console
+              Peace of mind for people living alone
             </Text>
           </View>
         </ScrollView>
@@ -270,133 +408,271 @@ function App() {
 }
 
 const styles = StyleSheet.create({
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#fafafa',
+  },
+  loadingText: {
+    marginTop: 16,
+    fontSize: 16,
+    color: '#64748b',
+  },
   container: {
     flex: 1,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: '#fafafa',
+  },
+  scrollView: {
+    flex: 1,
   },
   scrollContainer: {
-    flexGrow: 1,
-    padding: 20,
+    padding: 24,
+    paddingTop: 16,
+    paddingBottom: 48,
   },
   header: {
     alignItems: 'center',
-    marginBottom: 30,
-    paddingVertical: 20,
-    backgroundColor: '#fff',
-    borderRadius: 10,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
+    marginBottom: 40,
+    paddingTop: 8,
   },
-  title: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    color: '#333',
-    marginBottom: 8,
+  logoText: {
+    fontSize: 36,
+    fontWeight: '700',
+    color: '#0f172a',
+    letterSpacing: -0.5,
+    marginBottom: 4,
   },
-  subtitle: {
-    fontSize: 16,
-    color: '#666',
-    textAlign: 'center',
-    marginBottom: 8,
-  },
-  platform: {
-    fontSize: 14,
-    color: '#007AFF',
+  tagline: {
+    fontSize: 17,
+    color: '#64748b',
     fontWeight: '500',
   },
-  section: {
-    backgroundColor: '#fff',
-    borderRadius: 10,
-    padding: 20,
-    marginBottom: 20,
+  statusCard: {
+    backgroundColor: '#ffffff',
+    borderRadius: 20,
+    padding: 24,
+    marginBottom: 28,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
     elevation: 3,
   },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#333',
-    marginBottom: 15,
-  },
-  textInput: {
-    borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 8,
-    padding: 12,
-    fontSize: 16,
-    marginBottom: 15,
-    backgroundColor: '#fafafa',
-  },
-  button: {
-    backgroundColor: '#007AFF',
-    borderRadius: 8,
-    padding: 15,
-    alignItems: 'center',
-  },
-  buttonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  token: {
-    fontSize: 12,
-    color: '#666',
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
-    backgroundColor: '#f8f8f8',
-    padding: 10,
-    borderRadius: 5,
-    lineHeight: 16,
-  },
-  messagesHeader: {
+  statusHeader: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 15,
+    marginBottom: 12,
   },
-  clearButton: {
-    backgroundColor: '#ff3b30',
+  statusDot: {
+    width: 10,
+    height: 10,
     borderRadius: 5,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
+    backgroundColor: '#cbd5e1',
+    marginRight: 10,
   },
-  clearButtonText: {
-    color: '#fff',
-    fontSize: 12,
-    fontWeight: '500',
+  statusDotActive: {
+    backgroundColor: '#10b981',
   },
-  noMessages: {
+  statusTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#0f172a',
+  },
+  lastCheckIn: {
+    fontSize: 15,
+    color: '#64748b',
+    marginBottom: 20,
+    lineHeight: 22,
+  },
+  timerContainer: {
+    backgroundColor: '#f8fafc',
+    borderRadius: 12,
+    padding: 16,
+    alignItems: 'center',
+  },
+  timerLabel: {
+    fontSize: 13,
+    color: '#94a3b8',
+    marginBottom: 8,
+  },
+  timerValue: {
+    fontSize: 28,
+    fontWeight: '700',
+    color: '#0f172a',
+    fontVariant: ['tabular-nums'],
+  },
+  checkInButton: {
+    backgroundColor: '#0D9488',
+    borderRadius: 16,
+    padding: 20,
+    alignItems: 'center',
+    marginBottom: 20,
+    shadowColor: '#0D9488',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 12,
+    elevation: 4,
+  },
+  checkInButtonSuccess: {
+    backgroundColor: '#10b981',
+  },
+  checkInButtonText: {
+    color: '#ffffff',
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  reassurance: {
+    fontSize: 15,
+    color: '#64748b',
+    lineHeight: 24,
     textAlign: 'center',
-    color: '#999',
-    fontStyle: 'italic',
-    paddingVertical: 20,
+    marginBottom: 32,
+    paddingHorizontal: 8,
   },
-  messageContainer: {
-    backgroundColor: '#f8f9fa',
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 10,
-    borderLeftWidth: 4,
-    borderLeftColor: '#007AFF',
+  settingsLink: {
+    alignItems: 'center',
+    marginBottom: 24,
   },
-  message: {
-    fontSize: 12,
-    color: '#333',
-    lineHeight: 16,
+  settingsLinkText: {
+    fontSize: 15,
+    color: '#0D9488',
+    fontWeight: '600',
   },
   footer: {
     alignItems: 'center',
-    paddingVertical: 20,
   },
   footerText: {
     fontSize: 14,
-    color: '#666',
+    color: '#94a3b8',
     textAlign: 'center',
+  },
+  backButton: {
+    paddingVertical: 12,
+    paddingRight: 16,
+    marginBottom: 16,
+  },
+  backButtonText: {
+    fontSize: 16,
+    color: '#0D9488',
+    fontWeight: '600',
+  },
+  checkInScreen: {
+    flex: 1,
+    padding: 24,
+    justifyContent: 'space-between',
+  },
+  checkInContent: {
+    alignItems: 'center',
+    flex: 1,
+    justifyContent: 'center',
+  },
+  checkInIcon: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: '#ccfbf1',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 24,
+  },
+  checkInIconText: {
+    fontSize: 40,
+    color: '#0D9488',
+    fontWeight: '700',
+  },
+  checkInTitle: {
+    fontSize: 26,
+    fontWeight: '700',
+    color: '#0f172a',
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  checkInSubtitle: {
+    fontSize: 17,
+    color: '#475569',
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  checkInBody: {
+    fontSize: 15,
+    color: '#64748b',
+    lineHeight: 24,
+    textAlign: 'center',
+  },
+  checkInActions: {
+    gap: 12,
+    paddingBottom: 24,
+  },
+  primaryButton: {
+    backgroundColor: '#0D9488',
+    borderRadius: 16,
+    padding: 20,
+    alignItems: 'center',
+    shadowColor: '#0D9488',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 12,
+    elevation: 4,
+  },
+  primaryButtonText: {
+    color: '#ffffff',
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  secondaryButton: {
+    backgroundColor: '#f1f5f9',
+    borderRadius: 16,
+    padding: 20,
+    alignItems: 'center',
+  },
+  secondaryButtonText: {
+    color: '#64748b',
+    fontSize: 17,
+    fontWeight: '600',
+  },
+  settingsScreen: {
+    flex: 1,
+    padding: 24,
+  },
+  settingsTitle: {
+    fontSize: 24,
+    fontWeight: '700',
+    color: '#0f172a',
+    marginBottom: 8,
+  },
+  settingsSubtitle: {
+    fontSize: 15,
+    color: '#64748b',
+    lineHeight: 22,
+    marginBottom: 24,
+  },
+  settingsCard: {
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  settingsLabel: {
+    fontSize: 13,
+    color: '#94a3b8',
+    marginBottom: 4,
+  },
+  settingsValue: {
+    fontSize: 16,
+    color: '#0f172a',
+    marginBottom: 16,
+  },
+  settingsHint: {
+    fontSize: 13,
+    color: '#94a3b8',
+    lineHeight: 20,
+    marginTop: 8,
   },
 });
 
