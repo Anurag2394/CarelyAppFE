@@ -32,32 +32,32 @@ function App() {
   const [isTokenSent, setIsTokenSent] = useState<boolean>(false);
 
   // Function to send FCM token to backend
-  const sendTokenToBackend = async (token: string) => {
-    try {
-      const response = await fetch(backendUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          fcmToken: token,
-          deviceType: Platform.OS,
-          timestamp: new Date().toISOString(),
-        }),
-      });
+  // const sendTokenToBackend = async (token: string) => {
+  //   try {
+  //     const response = await fetch(backendUrl, {
+  //       method: 'POST',
+  //       headers: {
+  //         'Content-Type': 'application/json',
+  //       },
+  //       body: JSON.stringify({
+  //         fcmToken: token,
+  //         deviceType: Platform.OS,
+  //         timestamp: new Date().toISOString(),
+  //       }),
+  //     });
 
-      if (response.ok) {
-        console.log('Token sent to backend successfully');
-        setIsTokenSent(true);
-      } else {
-        console.error('Failed to send token to backend, status:', response.status);
-      }
-    } catch (error) {
-      console.error('Error sending token to backend:', error);
-    }
-  };
+  //     if (response.ok) {
+  //       console.log('Token sent to backend successfully');
+  //       setIsTokenSent(true);
+  //     } else {
+  //       console.error('Failed to send token to backend, status:', response.status);
+  //     }
+  //   } catch (error) {
+  //     console.error('Error sending token to backend:', error);
+  //   }
+  // };
 
-  // Function to send acknowledgment to backend
+  //Function to send acknowledgment to backend
   const sendAcknowledgment = async (messageId: string) => {
     try {
       const response = await fetch(`${backendUrl}/acknowledge`, {
@@ -165,7 +165,7 @@ function App() {
     const unsubscribe = messaging().onMessage(async remoteMessage => {
       // Process the message here
       console.log('A new FCM message arrived in the foreground!', remoteMessage);
-      Alert.alert( remoteMessage.notification?.title || 'Carely Notification', remoteMessage.notification?.body || 'Check-in required');
+      //Alert.alert( remoteMessage.notification?.title || 'Carely Notification', remoteMessage.notification?.body || 'Check-in required');
       try{
         await notifee.displayNotification({
           title: remoteMessage.notification?.title || 'Carely Notification',
@@ -173,6 +173,7 @@ function App() {
           data: { messageId: remoteMessage.messageId || remoteMessage.data?.messageId || 'unknown' },
           android: {
             channelId: 'default',
+            importance: 4,
             sound: 'hollow',
             actions: [
               {
@@ -202,45 +203,6 @@ function App() {
     return unsubscribe;
   }, []);
 
-  const handleTestNotification = async () => {
-    try {
-      // Ensure channel exists for Android
-      if (Platform.OS === 'android') {
-        await notifee.createChannel({
-          id: 'default2',
-          name: 'Default Channel 2',
-        });
-        console.log('Notification channel created default2');
-      }
-
-      await notifee.displayNotification({
-        title: 'Test Notification',
-        body: 'This is a test notification with Check-in action',
-        data: { messageId: 'test-123' },
-        android: {
-          channelId: 'default2',
-          actions: [
-            {
-              title: 'Check-in',
-              pressAction: {
-                id: 'checkin',
-              },
-            },
-          ],
-        },
-        ios: {
-          categoryId: 'checkin',
-        },
-      });
-    } catch (error) {
-      console.error('Error displaying test notification:', error);
-      Alert.alert('Error', 'Failed to display test notification');
-    }
-  };
-
-  const handleButtonPress = () => {
-    Alert.alert('Button Pressed', `You entered: ${inputText || 'nothing'}`);
-  };
 
   const handleClearMessages = () => {
     setMessages([]);
@@ -262,23 +224,6 @@ function App() {
             </Text>
           </View>
 
-          {/* Input Section */}
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Test Input</Text>
-            <TextInput
-              style={styles.textInput}
-              placeholder="Enter some text..."
-              value={inputText}
-              onChangeText={setInputText}
-              placeholderTextColor="#999"
-            />
-            <TouchableOpacity style={styles.button} onPress={handleButtonPress}>
-              <Text style={styles.buttonText}>Test Button</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={[styles.button, { backgroundColor: '#28a745', marginTop: 10 }]} onPress={handleTestNotification}>
-              <Text style={styles.buttonText}>Test Notification</Text>
-            </TouchableOpacity>
-          </View>
 
           {/* Firebase Token Section */}
           <View style={styles.section}>
